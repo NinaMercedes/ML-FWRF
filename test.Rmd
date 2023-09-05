@@ -1,0 +1,572 @@
+---
+title: "Kanamycin_Network"
+author: "N Billows"
+date: "05/09/2023"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This R Markdown document is made interactive using Shiny. Unlike the more traditional workflow of creating static reports, you can now create documents that allow your readers to change the assumptions underlying your analysis and see the results immediately. 
+
+To learn more, see [Interactive Documents](http://rmarkdown.rstudio.com/authoring_shiny.html).
+
+## Inputs and Outputs
+
+You can embed Shiny inputs and outputs in your document. Outputs are automatically updated whenever inputs change.  This demonstrates how a standard R plot can be made interactive by wrapping it in the Shiny `renderPlot` function. The `selectInput` and `sliderInput` functions create the input widgets used to drive the plot.
+
+```{r eruptions, echo=FALSE}
+library(dplyr)
+library(visNetwork)
+library(shiny)
+
+#### PARAMS ####
+genes_of_interest <- c("rrs", "eis")
+genes_of_interest_known <-c("rrs", "eis")
+genes_of_interest_compensatory <- c("X")
+drug_name <- c("kanamycin")
+all_drug_names <- c("kanamycin")
+thresholds_hl <-2
+thresholds_ul <-0
+thresholds_u <- 1.5
+
+cand_gene <- c("embR","rrs", "fabG1","inhA","rpsA","tlyA","katG","pncA","kasA","panD","embC","embA","embB",NA,"gid", "gyrB","gyrA","rpoB","rpoC","rpsL","ahpC","eis" )
+
+hgvs <- read.csv("~/phd/Data/Chapter3/Annotation/hgvs.csv")
+
+hgvs <- hgvs %>%   filter(Effect=="MODIFIER" & Gene %in% c("rrs")|!Effect=="MODIFIER" & !Gene  %in% c("rrs"))
+hgvs[is.na(hgvs[,c("Protein_Change")]),c("Protein_Change")]  <- hgvs[is.na(hgvs[,c("Protein_Change")]),c("NA_Change")]  
+hgvs$ID <- paste0(hgvs$ID,"_",hgvs$Position,"_",hgvs$Alt_Allele)
+hgvs <- unique(hgvs)
+##### Lineage
+lineage_snp_id <- read.csv("~/phd/Data/RFnetworks/lineage_snp_id.csv", sep="")
+lineage_barcode <- read.csv("~/phd/Data/RFnetworks/lineage_barcode.csv")
+lineage_barcode$id <- paste0("Chromosome_",lineage_barcode$Pos,"_",lineage_barcode$Alt)
+
+interactions2 <- read.csv(paste0("~/phd/Data/RFnetworks/",drug_name,"_interactions2.csv"))
+interactions2 <- interactions2[,-1]
+interactions2 <- data.frame(apply(interactions2, 2, function(x) gsub(" ", "", x)))
+interactions2 <- unique(interactions2)
+interactions2 <- left_join(interactions2, hgvs, by= c("Mutation_1"="ID"))
+interactions2 <- left_join(interactions2, hgvs, by= c("Mutation_2" = "ID"))
+interactions2[grepl("fs", interactions2$Protein_Change.x),c("Protein_Change.x")] <- interactions2[grepl("fs", interactions2$Protein_Change.x),c("NA_Change.x")]
+interactions2[grepl("fs", interactions2$Protein_Change.y),c("Protein_Change.y")] <- interactions2[grepl("fs", interactions2$Protein_Change.y),c("NA_Change.y")]
+########NEED TO ESCAPE ????
+interactions2[grepl("\\?", interactions2$Protein_Change.x),c("Protein_Change.x")] <- interactions2[grepl("\\?", interactions2$Protein_Change.x),c("NA_Change.x")]
+interactions2[grepl("\\?", interactions2$Protein_Change.y),c("Protein_Change.y")] <- interactions2[grepl("\\?", interactions2$Protein_Change.y),c("NA_Change.y")]
+
+
+interactions2 <- interactions2 %>% filter(Gene.x %in% cand_gene & Gene.y %in% cand_gene)
+
+
+
+tbdb <- read.csv("~/phd/Data/Chapter3/Annotation/tbdb.csv")
+interactions2$known_1 <- NA
+interactions2$coocurring_1 <- NA
+interactions2$known_2 <- NA
+interactions2$coocurring_2 <- NA
+interactions2$total_effect1 <- NA
+interactions2$total_effect2 <- NA
+interactions2$candgene1 <- NA
+interactions2$candgene2 <- NA
+known<- tbdb %>% filter(Drug==paste0(drug_name))
+coocurring <- tbdb %>% filter(!Drug %in% all_drug_names)
+interactions2$known_1 <- ifelse(interactions2$Protein_Change.x %in% known$Mutation & interactions2$Gene.x %in% c(genes_of_interest), 1,0)
+interactions2$known_2 <- ifelse(interactions2$Protein_Change.y %in% known$Mutation & interactions2$Gene.y %in% c(genes_of_interest), 1,0)
+interactions2$coocurring_1 <- ifelse(interactions2$Protein_Change.x %in% coocurring$Mutation & !interactions2$Gene.x %in% c(genes_of_interest), 1,0)
+interactions2$coocurring_2 <- ifelse(interactions2$Protein_Change.y %in% coocurring$Mutation & !interactions2$Gene.y %in% c(genes_of_interest), 1,0)
+interactions2$lineage_1 <- ifelse(interactions2$Mutation_1 %in% lineage_barcode$id, 1,0)
+interactions2$lineage_2 <- ifelse(interactions2$Mutation_2 %in% lineage_barcode$id, 1,0)
+interactions2$total_effect1 <- ifelse(interactions2$Effect.x %in% c("HIGH", "MODERATE"), 1,0)
+interactions2$total_effect2<- ifelse(interactions2$Effect.y %in% c("HIGH", "MODERATE"), 1,0)
+interactions2$candgene1 <- ifelse(interactions2$Gene.x %in% c(genes_of_interest), 1,0)
+interactions2$candgene2<- ifelse(interactions2$Gene.y %in% c(genes_of_interest), 1,0)
+interactions2$score_1 <- NA
+interactions2[,25:32] <- apply(interactions2[,25:32],2, function(x) as.numeric(as.character(x)))
+interactions2 <- data.frame(interactions2)
+interactions2$score_1 <-  interactions2$known_1 + interactions2$known_2 - interactions2$coocurring_1 - interactions2$coocurring_2 + interactions2$total_effect1 + interactions2$total_effect2 + interactions2$candgene1 + interactions2$candgene2 - interactions2$lineage_1 - interactions2$lineage_2
+interactions2$score_2 <- interactions2$score_1 * as.numeric(as.character(interactions2$coeff))
+interactions2$ks_1 <- NA
+for (i in 1: nrow(interactions2)){
+  if (interactions2$score_2[i]>=thresholds_hl){
+    interactions2$ks_1[i] <- "Highly likely"
+  }
+  if (interactions2$score_2[i]<=thresholds_ul){
+    interactions2$ks_1[i] <- "Highly unlikely"
+  }
+  if (interactions2$score_2[i]>thresholds_ul & interactions2$score_2[i]<thresholds_u){
+    interactions2$ks_1[i] <- "Unlikely"
+  }
+  if (interactions2$score_2[i]>=thresholds_u & interactions2$score_2[i]<thresholds_hl){
+    interactions2$ks_1[i] <- "Likely"
+  }
+}
+interactions2$ec_1 <- "grey"
+interactions2$ec_2 <- "black"
+
+interactions2$gen_int <- 1
+interactions2$ks_2 <- interactions2$ks_1
+interactions2$name.x <- paste0(interactions2$Gene.x,": ",interactions2$Protein_Change.x)
+interactions2$name.y <- paste0(interactions2$Gene.y,": ",interactions2$Protein_Change.y)
+network_df <- interactions2 %>% filter(score_1>5)
+
+string_interactions_short <- read.delim("~/phd/Data/RFnetworks/string_interactions_short.tsv", header=FALSE, comment.char="#")
+string_interactions_short <- string_interactions_short[,c(1:2,13)]
+colnames(string_interactions_short) <- c("P1", "P2", "coeff")
+string_interactions_short$candgene1 <- ifelse(string_interactions_short$P1 %in% c(genes_of_interest), 1,0)
+string_interactions_short$candgene2<- ifelse(string_interactions_short$P2 %in% c(genes_of_interest), 1,0)
+string_interactions_short$known_1 <- ifelse(string_interactions_short$P1 %in% c(genes_of_interest), 1,0)
+string_interactions_short$known_2<- ifelse(string_interactions_short$P2 %in% c(genes_of_interest), 1,0)
+string_interactions_short$coocurring_1 <- ifelse(string_interactions_short$P1 %in% c(genes_of_interest), 0,1)
+string_interactions_short$coocurring_2<- ifelse(string_interactions_short$P2 %in% c(genes_of_interest), 0,1)
+string_interactions_short$ks_1 <- "Not Applicable"
+string_interactions_short <- unique(string_interactions_short)
+string_interactions_short$name.x <- string_interactions_short$P1
+string_interactions_short$name.y <- string_interactions_short$P2
+string_interactions_short$ec_1 <- "black"
+string_interactions_short$group_1 <- paste0(string_interactions_short$P1,"_PPI")
+string_interactions_short$group_2 <- paste0(string_interactions_short$P2,"_PPI")
+
+
+
+## Let's make nodes data.frame
+nodes <- data.frame(id=c(interactions2$Mutation_1, interactions2$Mutation_2, string_interactions_short$P1, string_interactions_short$P2),  
+                    gene = c(interactions2$Gene.x, interactions2$Gene.y, string_interactions_short$P1, string_interactions_short$P2), 
+                    candgene= c(interactions2$candgene1, interactions2$candgene2, string_interactions_short$candgene1, string_interactions_short$candgene2), 
+                    known= c(interactions2$known_1, interactions2$known_2, string_interactions_short$known_1, string_interactions_short$known_2), 
+                    coocurring=c(interactions2$coocurring_1, interactions2$coocurring_2, string_interactions_short$coocurring_1, string_interactions_short$coocurring_2),
+                    name= c(interactions2$name.x, interactions2$name.y, string_interactions_short$name.x, string_interactions_short$name.y),
+                    group=c(interactions2$Gene.x, interactions2$Gene.y, string_interactions_short$group_1, string_interactions_short$group_2))
+nodes <- unique(nodes)
+nodes$title <- paste0("<p><b>", nodes$name,"</b><br> </p>")
+nodes$type <- NA
+for (i in 1: nrow(nodes)){
+  if (nodes$id[i] %in% c(genes_of_interest_known)){
+    nodes$type[i] <- "Known"
+  }
+  if (nodes$id[i] %in% c(genes_of_interest_compensatory)){
+    nodes$type[i] <- "Compensatory"
+  }
+  if (!nodes$id[i] %in% c(genes_of_interest)){
+    nodes$type[i] <- "Co-occurring"
+  }
+  if (nodes$known[i]>0){
+    if (nodes$gene[i] %in% c(genes_of_interest_compensatory)){
+      nodes$type[i] <- "Compensatory"
+    } else {
+      nodes$type[i] <- "Known"
+    }
+  }
+  if (nodes$coocurring[i]>0){
+    nodes$type[i] <- "Co-occurring"
+  }
+  if (nodes$known[i]<1 & nodes$coocurring[i]<1){
+    if (nodes$id[i] %in% lineage_barcode$id){
+      nodes$type[i] <- "Lineage"
+    } else {
+      nodes$type[i] <- "Other"
+    }
+  }
+}
+nodes$candgene2 <- NA
+nodes$candgene2 <- ifelse(nodes$candgene>0, "Yes", "No")
+nodes$shape <- NA
+nodes$shadow <- NA
+nodes$border <- NA
+nodes$size <- NA
+nodes$label <- NA
+nodes$value <- NA
+for (i in 1:nrow(nodes)){
+  if(nodes$id[i] %in% unique(nodes$gene)){
+    nodes$shape[i]<- "ellipse"
+    nodes$shadow[i]<- TRUE
+    nodes$border[i]<- "black"
+    nodes$value[i]<- 50000
+    nodes$size[i]<- 100
+    nodes$label[i]<- nodes$id[i]
+  } else {
+    nodes$shape[i]<- "dot"
+    nodes$shadow[i]<- FALSE
+    nodes$label[i]<- nodes$name[i]
+    nodes$size[i]<- 50
+  }
+  
+  
+  
+}
+
+
+
+
+interactions2$width1 <- 0.2
+interactions2$width2 <- 0.2
+interactions2$dash1<- FALSE
+interactions2$dash2 <- TRUE
+string_interactions_short$width1 <- 0.2
+string_interactions_short$ec_1 <- "black"
+string_interactions_short$dash <- TRUE
+edges <- data.frame(from = c(interactions2$Mutation_1,interactions2$Mutation_1, interactions2$Mutation_2, string_interactions_short$P1), 
+                    to = c(interactions2$Mutation_2, interactions2$Gene.x, interactions2$Gene.y, string_interactions_short$P2), 
+                    knowledge_score = c(interactions2$ks_1, interactions2$ks_2, interactions2$ks_2, string_interactions_short$ks_1), 
+                    coeff= c(interactions2$coeff, interactions2$gen_int, interactions2$gen_int, string_interactions_short$coeff),
+                    edge_colour= c(interactions2$ec_1, interactions2$ec_2, interactions2$ec_2, string_interactions_short$ec_1),
+                    value= c(interactions2$width1, interactions2$width2,interactions2$width2, string_interactions_short$width1),
+                    dashes=c(interactions2$dash1, interactions2$dash2, interactions2$dash2,string_interactions_short$dash))
+
+edges$name <- paste0(edges$to,"_",edges$from)
+
+edges$coeff2 <- NA
+edges$coeff2 <- ifelse(edges$coeff>=0.7, "Yes", "No")
+
+#edges$dashes <- TRUE
+edges$value <- NULL
+
+edges <- unique(edges)
+
+
+ui <- fluidPage(title = "example",
+                fillPage(sidebarLayout(
+                  sidebarPanel(
+                    selectInput(
+                      inputId = "filterNodes",
+                      label = "Filter nodes in candidate genes:",
+                      choices = c("Yes", "No"),
+                      selected = c("No")
+                    ), 
+                    checkboxGroupInput(
+                      inputId = "filterEdges",
+                      label = paste0("Role in ", drug_name, " resistance:"),
+                      choices = unique(edges$knowledge_score),
+                      selected = unique(edges$knowledge_score)
+                    )
+                    ,
+                    selectInput(
+                      inputId = "filterEdges2",
+                      label = "Show strong interactions only:",
+                      choices = c("Yes", "No"),
+                      selected = c("No")
+                    ),
+                    checkboxGroupInput(
+                      inputId = "filterNodes2",
+                      label = "Confers:",
+                      choices = unique(nodes$type),
+                      selected = unique(nodes$type)
+                    ),
+                    selectInput(
+                      inputId = "filterNodes3",
+                      label = "Hide PPI network:",
+                      choices = c("Yes", "No"),
+                      selected = c("No")
+                    ),
+                    selectInput(
+                      inputId = "layout",
+                      label = "Layout:",
+                      choices = c("Default", "Circle"),
+                      selected = c("Default")
+                    )
+                    ,
+                    width = 3
+                  ),
+                  mainPanel(
+                    visNetworkOutput("network_proxy_update", width = "100%", height = "90vh"),  
+                    width = 9
+                  )
+                )))
+ui <- fluidPage(title = "example",
+                fillPage(sidebarLayout(
+                  sidebarPanel(
+                    selectInput(
+                      inputId = "filterNodes",
+                      label = "Filter nodes in candidate genes:",
+                      choices = c("Yes", "No"),
+                      selected = c("Yes")
+                    ), 
+                    checkboxGroupInput(
+                      inputId = "filterEdges",
+                      label = paste0("Role in ", drug_name, " resistance:"),
+                      choices = unique(edges$knowledge_score),
+                      selected = c("Likely", "Highly likely", "Not Applicable")
+                    )
+                    ,
+                    selectInput(
+                      inputId = "filterEdges2",
+                      label = "Show strong interactions only:",
+                      choices = c("Yes", "No"),
+                      selected = c("No")
+                    ),
+                    checkboxGroupInput(
+                      inputId = "filterNodes2",
+                      label = "Confers:",
+                      choices = unique(nodes$type),
+                      selected = unique(nodes$type)
+                    ),
+                    selectInput(
+                      inputId = "filterNodes3",
+                      label = "Hide PPI network:",
+                      choices = c("Yes", "No"),
+                      selected = c("No")
+                    ),
+                    selectInput(
+                      inputId = "layout",
+                      label = "Layout:",
+                      choices = c("Default", "Circle"),
+                      selected = c("Default")
+                    )
+                    ,
+                    width = 3
+                  ),
+                  mainPanel(
+                    visNetworkOutput("network_proxy_update", width = "100%", height = "90vh"),  
+                    width = 9
+                  )
+                )))
+
+
+nodes$font.size <- 30
+
+server <- function(input, output) {
+  output$network_proxy_update <- renderVisNetwork({
+    visNetwork(nodes, edges) %>%  visIgraphLayout(randomSeed = 10) %>%
+      visGroups(groupname = "rpoB", color = "#56B4E9") %>%
+      visGroups(groupname = "rpoC", color = "#0072B2") %>%
+      
+      visGroups(groupname = "katG", color = "#D55E00") %>%
+      visGroups(groupname = "inhA", color = "#E69F00") %>%
+      visGroups(groupname = "ahpC", color = "#f2bf4e") %>%
+      visGroups(groupname = "kasA", color = "#ebc97f") %>%
+      visGroups(groupname = "fabG1", color = "#edd59f") %>%
+      
+      visGroups(groupname = "embA", color = "#4da890") %>%
+      visGroups(groupname = "embB", color = "#009E73") %>%
+      visGroups(groupname = "embC", color = "#68ab99") %>%
+      visGroups(groupname = "embR", color = "#84ada2") %>%
+      
+      visGroups(groupname = "panD", color = "#F0E442") %>%
+      visGroups(groupname = "pncA", color = "#f0e662") %>%
+      visGroups(groupname = "rpsA", color = "#f0e884") %>%
+      
+      visGroups(groupname = "gid", color = "#CC79A7") %>%
+      visGroups(groupname = "rpsL", color = "#cc8baf") %>%
+      visGroups(groupname = "rrs", color = "#c9a1b7") %>%
+      visGroups(groupname = "tlyA", color = "#c9bbc3") %>%
+      visGroups(groupname = "eis", color = "#c9c9c9") %>%
+      
+      visGroups(groupname = "gyrA", color = "#999999") %>%
+      visGroups(groupname = "gyrB", color = "#7d7d7d") %>%
+      
+      visGroups(groupname = "rpoB_PPI", color =  "#56B4E9") %>%
+      visGroups(groupname = "rpoC_PPI", color =  "#0072B2") %>%
+      
+      visGroups(groupname = "katG_PPI", color =  "#D55E00") %>%
+      visGroups(groupname = "inhA_PPI", color =  "#E69F00") %>%
+      visGroups(groupname = "ahpC_PPI", color =  "#f2bf4e") %>%
+      visGroups(groupname = "kasA_PPI", color =  "#ebc97f") %>%
+      visGroups(groupname = "fabG1_PPI", color =  "#edd59f") %>%
+      
+      visGroups(groupname = "embA_PPI", color =  "#4da890") %>%
+      visGroups(groupname = "embB_PPI", color =  "#009E73") %>%
+      visGroups(groupname = "embC_PPI", color =  "#68ab99") %>%
+      visGroups(groupname = "embR_PPI", color =  "#84ada2") %>%
+      
+      visGroups(groupname = "panD_PPI", color =  "#F0E442") %>%
+      visGroups(groupname = "pncA_PPI", color =  "#f0e662") %>%
+      visGroups(groupname = "rpsA_PPI", color =  "#f0e884") %>%
+      
+      visGroups(groupname = "gid_PPI", color =  "#CC79A7") %>%
+      visGroups(groupname = "rpsL_PPI", color =  "#cc8baf") %>%
+      visGroups(groupname = "rrs_PPI", color =  "#c9a1b7") %>%
+      visGroups(groupname = "tlyA_PPI", color =  "#c9bbc3") %>%
+      visGroups(groupname = "eis_PPI", color =  "#c9c9c9") %>%
+      
+      visGroups(groupname = "gyrA_PPI", color =  "#999999") %>%
+      visGroups(groupname = "gyrB_PPI", color =  "#7d7d7d") %>%
+      
+      visLegend(addNodes = list(list(label="rpoB",shape="dot",size=10,color="#56B4E9",font=list(color="black", size=10)),
+                                list(label="rpoC",shape="dot",size=10,color="#0072B2",font=list(color="black", size=10)),
+                                list(label="katG",shape="dot",size=10,color="#D55E00",font=list(color="black", size=10)),
+                                list(label="inhA",shape="dot",size=10,color="#E69F00",font=list(color="black", size=10)),
+                                list(label="ahpC",shape="dot",size=10,color="#f2bf4e",font=list(color="black", size=10)),
+                                list(label="kasA",shape="dot",size=10,color="#ebc97f",font=list(color="black", size=10)),
+                                list(label="fabG1",shape="dot",size=10,color="#edd59f",font=list(color="black", size=10)),
+                                list(label="embA",shape="dot",size=10,color="#4da890",font=list(color="black", size=10)),
+                                list(label="embB",shape="dot",size=10,color="#009E73",font=list(color="black", size=10)),
+                                list(label="embC",shape="dot",size=10,color="#68ab99",font=list(color="black", size=10)),
+                                list(label="embR",shape="dot",size=10,color="#84ada2",font=list(color="black", size=10)),
+                                list(label="panD",shape="dot",size=10,color="#F0E442",font=list(color="black", size=10)),
+                                list(label="pncA",shape="dot",size=10,color="#f0e662",font=list(color="black", size=10)),
+                                list(label="rpsA",shape="dot",size=10,color="#f0e884",font=list(color="black", size=10)),
+                                list(label="gid",shape="dot",size=10,color="#CC79A7",font=list(color="black", size=10)),
+                                list(label="rpsL",shape="dot",size=10,color="#cc8baf",font=list(color="black", size=10)),
+                                list(label="rrs",shape="dot",size=10,color="#c9a1b7",font=list(color="black", size=10)),
+                                list(label="tlyA",shape="dot",size=10,color="#c9bbc3",font=list(color="black", size=10)),
+                                list(label="eis",shape="dot",size=10,color="#c9c9c9",font=list(color="black", size=10)),
+                                list(label="gyrA",shape="dot",size=10,color="#999999",font=list(color="black", size=10)),
+                                list(label="gyrB",shape="dot",size=10,color="#7d7d7d",font=list(color="black", size=10)))
+                ,
+                useGroups = FALSE, ncol=3) %>% 
+      visNodes(font = list(size = 25) , 
+               scaling = list(label = list(
+                 enabled = TRUE, 
+                 min = 25, max = 100, 
+                 maxVisible = 100, 
+                 drawThreshold = 1
+               )))
+  })
+  myVisNetworkProxy <- visNetworkProxy("network_proxy_update") 
+  observe ({
+    myfilteredEdges <- edges %>% filter(knowledge_score %in% input$filterEdges) %>% filter(if ("Yes" %in% input$filterEdges2){
+      coeff2 %in% c("Yes")
+    } else {
+      coeff2 %in% unique(coeff2) 
+    })                                                                                    
+    
+    myfilteredNodes <- nodes %>% filter(if ("Yes" %in% input$filterNodes){
+      candgene %in% c(1)
+    } else {
+      candgene %in% c(0,1)      
+    }) %>% 
+      filter(id %in% c(myfilteredEdges$to, myfilteredEdges$from)) %>% filter(type %in% input$filterNodes2)  %>% 
+      filter(if ("Yes" %in% input$filterNodes3){
+        !id %in% unique(nodes$gene)
+      } else {
+        id %in% id
+      })
+    myhiddenEdges <- anti_join(edges, myfilteredEdges)
+    myhiddenNodes <- anti_join(nodes, myfilteredNodes)
+    visRemoveEdges(myVisNetworkProxy, id = myhiddenEdges$name)
+    visRemoveNodes(myVisNetworkProxy, id = myhiddenNodes$id)
+    visUpdateEdges(myVisNetworkProxy, myfilteredEdges)
+    visUpdateNodes(myVisNetworkProxy, nodes = myfilteredNodes)
+    if (nrow(myfilteredNodes)<200){
+      output$network_proxy_update <- renderVisNetwork({
+        plot1 <- visNetwork(myfilteredNodes, myfilteredEdges) %>%  
+          visGroups(groupname = "rpoB", color = "#56B4E9") %>%
+          visGroups(groupname = "rpoC", color = "#0072B2") %>%
+          
+          visGroups(groupname = "katG", color = "#D55E00") %>%
+          visGroups(groupname = "inhA", color = "#E69F00") %>%
+          visGroups(groupname = "ahpC", color = "#f2bf4e") %>%
+          visGroups(groupname = "kasA", color = "#ebc97f") %>%
+          visGroups(groupname = "fabG1", color = "#edd59f") %>%
+          
+          visGroups(groupname = "embA", color = "#4da890") %>%
+          visGroups(groupname = "embB", color = "#009E73") %>%
+          visGroups(groupname = "embC", color = "#68ab99") %>%
+          visGroups(groupname = "embR", color = "#84ada2") %>%
+          
+          visGroups(groupname = "panD", color = "#F0E442") %>%
+          visGroups(groupname = "pncA", color = "#f0e662") %>%
+          visGroups(groupname = "rpsA", color = "#f0e884") %>%
+          
+          visGroups(groupname = "gid", color = "#CC79A7") %>%
+          visGroups(groupname = "rpsL", color = "#cc8baf") %>%
+          visGroups(groupname = "rrs", color = "#c9a1b7") %>%
+          visGroups(groupname = "tlyA", color = "#c9bbc3") %>%
+          visGroups(groupname = "eis", color = "#c9c9c9") %>%
+          
+          visGroups(groupname = "gyrA", color = "#999999") %>%
+          visGroups(groupname = "gyrB", color = "#7d7d7d") %>%
+          
+          visGroups(groupname = "rpoB_PPI", color = list(background= "#56B4E9", border="black")) %>%
+          visGroups(groupname = "rpoC_PPI", color = list(background= "#0072B2", border="black")) %>%
+          
+          visGroups(groupname = "katG_PPI", color = list(background= "#D55E00", border="black")) %>%
+          visGroups(groupname = "inhA_PPI", color = list(background= "#E69F00", border="black")) %>%
+          visGroups(groupname = "ahpC_PPI", color = list(background= "#f2bf4e", border="black")) %>%
+          visGroups(groupname = "kasA_PPI", color = list(background= "#ebc97f", border="black")) %>%
+          visGroups(groupname = "fabG1_PPI", color = list(background= "#edd59f", border="black")) %>%
+          
+          visGroups(groupname = "embA_PPI", color = list(background= "#4da890", border="black")) %>%
+          visGroups(groupname = "embB_PPI", color = list(background= "#009E73", border="black")) %>%
+          visGroups(groupname = "embC_PPI", color = list(background= "#68ab99", border="black")) %>%
+          visGroups(groupname = "embR_PPI", color = list(background= "#84ada2", border="black")) %>%
+          
+          visGroups(groupname = "panD_PPI", color = list(background= "#F0E442", border="black")) %>%
+          visGroups(groupname = "pncA_PPI", color = list(background= "#f0e662", border="black")) %>%
+          visGroups(groupname = "rpsA_PPI", color = list(background= "#f0e884", border="black")) %>%
+          
+          visGroups(groupname = "gid_PPI", color = list(background= "#CC79A7", border="black")) %>%
+          visGroups(groupname = "rpsL_PPI", color = list(background= "#cc8baf", border="black")) %>%
+          visGroups(groupname = "rrs_PPI", color = list(background= "#c9a1b7", border="black")) %>%
+          visGroups(groupname = "tlyA_PPI", color = list(background= "#c9bbc3", border="black")) %>%
+          visGroups(groupname = "eis_PPI", color = list(background= "#c9c9c9", border="black")) %>%
+          
+          visGroups(groupname = "gyrA_PPI", color = list(background= "#999999", border="black")) %>%
+          visGroups(groupname = "gyrB_PPI", color = list(background= "#7d7d7d", border="black")) %>%
+          
+          visLegend(addNodes = list(list(label="rpoB",shape="dot",size=10,color="#56B4E9",font=list(color="black", size=10)),
+                                    list(label="rpoC",shape="dot",size=10,color="#0072B2",font=list(color="black", size=10)),
+                                    list(label="katG",shape="dot",size=10,color="#D55E00",font=list(color="black", size=10)),
+                                    list(label="inhA",shape="dot",size=10,color="#E69F00",font=list(color="black", size=10)),
+                                    list(label="ahpC",shape="dot",size=10,color="#f2bf4e",font=list(color="black", size=10)),
+                                    list(label="kasA",shape="dot",size=10,color="#ebc97f",font=list(color="black", size=10)),
+                                    list(label="fabG1",shape="dot",size=10,color="#edd59f",font=list(color="black", size=10)),
+                                    list(label="embA",shape="dot",size=10,color="#4da890",font=list(color="black", size=10)),
+                                    list(label="embB",shape="dot",size=10,color="#009E73",font=list(color="black", size=10)),
+                                    list(label="embC",shape="dot",size=10,color="#68ab99",font=list(color="black", size=10)),
+                                    list(label="embR",shape="dot",size=10,color="#84ada2",font=list(color="black", size=10)),
+                                    list(label="panD",shape="dot",size=10,color="#F0E442",font=list(color="black", size=10)),
+                                    list(label="pncA",shape="dot",size=10,color="#f0e662",font=list(color="black", size=10)),
+                                    list(label="rpsA",shape="dot",size=10,color="#f0e884",font=list(color="black", size=10)),
+                                    list(label="gid",shape="dot",size=10,color="#CC79A7",font=list(color="black", size=10)),
+                                    list(label="rpsL",shape="dot",size=10,color="#cc8baf",font=list(color="black", size=10)),
+                                    list(label="rrs",shape="dot",size=10,color="#c9a1b7",font=list(color="black", size=10)),
+                                    list(label="tlyA",shape="dot",size=10,color="#c9bbc3",font=list(color="black", size=10)),
+                                    list(label="eis",shape="dot",size=10,color="#c9c9c9",font=list(color="black", size=10)),
+                                    list(label="gyrA",shape="dot",size=10,color="#999999",font=list(color="black", size=10)),
+                                    list(label="gyrB",shape="dot",size=10,color="#7d7d7d",font=list(color="black", size=10)))
+                    ,
+                    useGroups = FALSE, ncol=3)  %>%
+          visNodes(font = list(size = 25) , 
+                   scaling = list(label = list(
+                     enabled = TRUE, 
+                     min = 25, max = 100, 
+                     maxVisible = 100, 
+                     drawThreshold = 1
+                   )))
+        if (input$layout=="Default"){
+          plot2 <- plot1 %>%
+            visIgraphLayout(randomSeed = 10)
+        } else {
+          plot2 <- plot1 %>%
+            visIgraphLayout(layout = "layout_on_sphere", randomSeed = 10)
+        }
+        return(plot2)
+      })
+    }
+  })
+  
+}
+
+
+shinyApp(ui = ui, server = server)
+
+
+
+
+```
+
+## Embedded Application
+
+It's also possible to embed an entire Shiny application within an R Markdown document using the `shinyAppDir` function. This example embeds a Shiny application located in another directory:
+
+```{r tabsets, echo=FALSE}
+shinyAppDir(
+  system.file("examples/06_tabsets", package = "shiny"),
+  options = list(
+    width = "100%", height = 550
+  )
+)
+```
+
+Note the use of the `height` parameter to determine how much vertical space the embedded application should occupy.
+
+You can also use the `shinyApp` function to define an application inline rather then in an external directory.
+
+In all of R code chunks above the `echo = FALSE` attribute is used. This is to prevent the R code within the chunk from rendering in the document alongside the Shiny components.
+
+
+
