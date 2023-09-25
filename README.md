@@ -15,8 +15,3 @@ There are a few requirements:
 ```
 Rscript MLFWRF.R --train "train_dataset.csv" --test "train_dataset.csv"  --phenotypes c("rifampicin", "isoniazid","ethambutol", "pyrazinamide", "streptomycin", "kanamycin","capreomycin", "amikacin", "ofloxacin", "moxifloxacin") --pheno_order c("rifampicin", "isoniazid","ethambutol", "pyrazinamide", "streptomycin", "ofloxacin", "moxifloxacin","amikacin","capreomycin", "kanamycin") --fw_file "feature_weights.txt" --output_id "order1"
 ```
-
-### Interaction Analysis
-```
-Rscript tree_interactions.R --drug "rifampicin"
-```
